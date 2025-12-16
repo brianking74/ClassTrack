@@ -5,7 +5,8 @@ import AttendeeList from './components/AttendeeList';
 import SmartImport from './components/SmartImport';
 import LandingPage from './components/LandingPage';
 import AddAttendeeModal from './components/AddAttendeeModal';
-import ClassManager from './components/ClassManager'; // New Import
+import ClassManager from './components/ClassManager'; 
+import Onboarding from './components/Onboarding'; // New Import
 import { Attendee, PaymentStatus, ViewState, ClassDefinition } from './types';
 import { generateInsights } from './services/geminiService';
 
@@ -26,6 +27,7 @@ const MOCK_CLASSES: ClassDefinition[] = [
 
 const STORAGE_KEY = 'classtrack_attendees';
 const CLASSES_STORAGE_KEY = 'classtrack_classes';
+const ONBOARDING_KEY = 'classtrack_has_onboarded';
 
 const App: React.FC = () => {
   // Start at 'landing' page by default
@@ -69,6 +71,21 @@ const App: React.FC = () => {
       localStorage.setItem(CLASSES_STORAGE_KEY, JSON.stringify(classes));
     } catch (error) { console.error('Failed to save classes:', error); }
   }, [classes]);
+
+  // Handle flow from Landing Page
+  const handleLandingEnter = () => {
+    const hasOnboarded = localStorage.getItem(ONBOARDING_KEY) === 'true';
+    if (hasOnboarded) {
+      setCurrentView('dashboard');
+    } else {
+      setCurrentView('onboarding');
+    }
+  };
+
+  const handleOnboardingComplete = () => {
+    localStorage.setItem(ONBOARDING_KEY, 'true');
+    setCurrentView('dashboard');
+  };
 
   // Attendee Handlers
   const handleAddAttendee = (newAttendee: Attendee) => {
@@ -132,9 +149,13 @@ const App: React.FC = () => {
     setAiInsights(insights);
   };
 
-  // Logic to render full screen landing page
+  // Logic to render full screen views (Landing, Onboarding)
   if (currentView === 'landing') {
-    return <LandingPage onEnter={() => setCurrentView('dashboard')} />;
+    return <LandingPage onEnter={handleLandingEnter} />;
+  }
+
+  if (currentView === 'onboarding') {
+    return <Onboarding onComplete={handleOnboardingComplete} />;
   }
 
   // Render Main App Content

@@ -28,4 +28,4 @@ export interface DashboardStats {
   lowBalance: number;
 }
 
-export type ViewState = 'landing' | 'dashboard' | 'attendees' | 'import' | 'classes';
+export type ViewState = 'landing' | 'onboarding' | 'dashboard' | 'attendees' | 'import' | 'classes';
