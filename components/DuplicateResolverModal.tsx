@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { X, Users, Merge, Check, AlertCircle, ArrowRight } from 'lucide-react';
+import { X, Users, Merge, Check, Trash2, Wand2 } from 'lucide-react';
 import { Attendee } from '../types';
 
 interface DuplicateResolverModalProps {
@@ -9,6 +9,33 @@ interface DuplicateResolverModalProps {
   onResolve: (survivor: Attendee, victimIds: string[]) => void;
 }
 
+// Levenshtein distance for fuzzy matching
+const getLevenshteinDistance = (a: string, b: string): number => {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  const matrix = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(null));
+
+  for (let i = 0; i <= b.length; i++) {
+    matrix[i][0] = i;
+  }
+  for (let j = 0; j <= a.length; j++) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      const indicator = b[i - 1] === a[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + indicator
+      );
+    }
+  }
+  return matrix[b.length][a.length];
+};
+
 const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
   isOpen,
   onClose,
@@ -17,24 +44,71 @@ const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
 }) => {
   const [mergeSessions, setMergeSessions] = useState<Record<string, boolean>>({});
   const [selectedPrimary, setSelectedPrimary] = useState<Record<string, string>>({});
+  const [ignoredIds, setIgnoredIds] = useState<Set<string>>(new Set());
 
-  // Group attendees by normalized name
+  // Group attendees by normalized name or similarity
   const duplicateGroups = useMemo(() => {
-    const groups: Record<string, Attendee[]> = {};
-    attendees.forEach(a => {
-      const key = a.name.trim().toLowerCase();
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(a);
+    const groups: Attendee[][] = [];
+    const visited = new Set<string>();
+
+    // Sort by name length desc to prioritize longer names as "anchors"
+    const sortedAttendees = [...attendees].sort((a, b) => b.name.length - a.name.length);
+
+    sortedAttendees.forEach((attendee) => {
+      if (visited.has(attendee.id)) return;
+
+      const group = [attendee];
+      visited.add(attendee.id);
+
+      const name1 = attendee.name.trim().toLowerCase();
+
+      // Find matches for this attendee
+      sortedAttendees.forEach((candidate) => {
+        if (visited.has(candidate.id)) return;
+
+        const name2 = candidate.name.trim().toLowerCase();
+        
+        let isMatch = false;
+
+        // 1. Exact Match
+        if (name1 === name2) {
+          isMatch = true;
+        } 
+        // 2. Fuzzy Match (Levenshtein)
+        else if (name1.length > 3 && name2.length > 3) {
+           const dist = getLevenshteinDistance(name1, name2);
+           // Allow 1 typo for short names, 2 for longer names
+           const threshold = name1.length > 6 ? 2 : 1;
+           if (dist <= threshold) {
+             isMatch = true;
+           }
+        }
+
+        if (isMatch) {
+          group.push(candidate);
+          visited.add(candidate.id);
+        }
+      });
+
+      if (group.length > 1) {
+        groups.push(group);
+      }
     });
     
-    // Filter only those with more than 1 entry
-    return Object.entries(groups)
-      .filter(([_, group]) => group.length > 1)
-      .map(([name, group]) => ({
-        name: group[0].name, // Use original casing of first item
-        items: group
-      }));
+    return groups.map((group, idx) => ({
+      id: `group-${idx}`,
+      name: group[0].name, 
+      items: group
+    }));
   }, [attendees]);
+
+  // Filter out ignored IDs and groups that became too small
+  const activeGroups = duplicateGroups
+    .map(g => ({
+      ...g,
+      items: g.items.filter(item => !ignoredIds.has(item.id))
+    }))
+    .filter(g => g.items.length > 1);
 
   if (!isOpen) return null;
 
@@ -55,7 +129,7 @@ const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
       finalAttendee.sessionsRemaining += extraRemaining;
       finalAttendee.totalSessions += extraTotal;
       
-      // Append notes if they exist
+      // Append notes
       const otherNotes = victims
         .map(v => v.notes)
         .filter(Boolean)
@@ -69,6 +143,15 @@ const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
     }
 
     onResolve(finalAttendee, victims.map(v => v.id));
+    
+    // Clear selections for this group
+    const newPrimary = { ...selectedPrimary };
+    delete newPrimary[groupName];
+    setSelectedPrimary(newPrimary);
+  };
+
+  const handleIgnore = (id: string) => {
+    setIgnoredIds(prev => new Set(prev).add(id));
   };
 
   return (
@@ -79,13 +162,13 @@ const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
         <div className="flex items-center justify-between p-6 border-b border-slate-100 shrink-0">
           <div className="flex items-center space-x-3">
             <div className="bg-indigo-100 p-2 rounded-lg text-indigo-600">
-              <Merge size={20} />
+              <Wand2 size={20} />
             </div>
             <div>
               <h3 className="text-lg font-bold text-slate-900">Resolve Duplicates</h3>
               <p className="text-sm text-slate-500">
-                {duplicateGroups.length > 0 
-                  ? `Found ${duplicateGroups.length} sets of duplicate profiles.` 
+                {activeGroups.length > 0 
+                  ? `Found ${activeGroups.length} potential duplicate sets.` 
                   : "No duplicates found."}
               </p>
             </div>
@@ -97,7 +180,7 @@ const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
 
         {/* Content */}
         <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
-          {duplicateGroups.length === 0 ? (
+          {activeGroups.length === 0 ? (
             <div className="text-center py-12">
               <div className="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mx-auto mb-4">
                 <Check className="text-green-500" size={32} />
@@ -113,16 +196,22 @@ const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
             </div>
           ) : (
             <div className="space-y-8">
-              {duplicateGroups.map((group, groupIdx) => {
-                const primaryId = selectedPrimary[group.name] || group.items[0].id;
-                const isMerging = mergeSessions[group.name] || false;
+              {activeGroups.map((group) => {
+                const primaryId = selectedPrimary[group.id] || group.items[0].id;
+                const isMerging = mergeSessions[group.id] || false;
+                const isFuzzy = !group.items.every(i => i.name.toLowerCase() === group.items[0].name.toLowerCase());
                 
                 return (
-                  <div key={groupIdx} className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
+                  <div key={group.id} className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
                     <div className="p-4 bg-white border-b border-slate-100 flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
+                      <div className="flex items-center space-x-3">
                         <Users size={18} className="text-indigo-600" />
                         <span className="font-bold text-slate-800">{group.name}</span>
+                        {isFuzzy && (
+                          <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs font-medium border border-amber-200">
+                            Similar Names
+                          </span>
+                        )}
                         <span className="px-2 py-0.5 rounded-full bg-slate-100 text-xs font-medium text-slate-600 border border-slate-200">
                           {group.items.length} records
                         </span>
@@ -133,35 +222,47 @@ const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
                       <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Select Primary Account to Keep:</p>
                       
                       {group.items.map((item) => (
-                        <label 
-                          key={item.id} 
-                          className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${
-                            primaryId === item.id 
-                              ? 'bg-indigo-50 border-indigo-200 shadow-sm ring-1 ring-indigo-200' 
-                              : 'bg-white border-slate-200 hover:border-slate-300'
-                          }`}
-                        >
-                          <div className="flex items-center space-x-3">
-                            <input 
-                              type="radio" 
-                              name={`group-${groupIdx}`}
-                              checked={primaryId === item.id}
-                              onChange={() => setSelectedPrimary(prev => ({ ...prev, [group.name]: item.id }))}
-                              className="text-indigo-600 focus:ring-indigo-500"
-                            />
-                            <div>
-                              <div className="text-sm font-medium text-slate-900 flex items-center gap-2">
-                                <span>{item.classType}</span>
-                                {item.paymentStatus === 'Paid' && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 rounded-full">Paid</span>}
+                        <div key={item.id} className="flex items-center space-x-2">
+                          <label 
+                            className={`flex-1 flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${
+                              primaryId === item.id 
+                                ? 'bg-indigo-50 border-indigo-200 shadow-sm ring-1 ring-indigo-200' 
+                                : 'bg-white border-slate-200 hover:border-slate-300'
+                            }`}
+                          >
+                            <div className="flex items-center space-x-3">
+                              <input 
+                                type="radio" 
+                                name={group.id}
+                                checked={primaryId === item.id}
+                                onChange={() => setSelectedPrimary(prev => ({ ...prev, [group.id]: item.id }))}
+                                className="text-indigo-600 focus:ring-indigo-500"
+                              />
+                              <div>
+                                <div className="text-sm font-medium text-slate-900 flex items-center gap-2">
+                                  <span>{item.name}</span>
+                                  {item.paymentStatus === 'Paid' && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 rounded-full">Paid</span>}
+                                </div>
+                                <div className="text-xs text-slate-500 flex gap-2">
+                                   <span>{item.classType}</span>
+                                   <span className="text-slate-300">|</span>
+                                   <span>ID: ...{item.id.slice(-4)}</span>
+                                </div>
                               </div>
-                              <div className="text-xs text-slate-400">ID: ...{item.id.slice(-6)}</div>
                             </div>
-                          </div>
-                          <div className="text-right">
-                             <div className="text-sm font-bold text-slate-700">{item.sessionsRemaining} / {item.totalSessions}</div>
-                             <div className="text-xs text-slate-500">Sessions</div>
-                          </div>
-                        </label>
+                            <div className="text-right">
+                               <div className="text-sm font-bold text-slate-700">{item.sessionsRemaining} / {item.totalSessions}</div>
+                               <div className="text-xs text-slate-500">Sessions</div>
+                            </div>
+                          </label>
+                          <button 
+                            onClick={() => handleIgnore(item.id)}
+                            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Not a duplicate? Remove from group"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
                       ))}
 
                       <div className="mt-4 pt-4 border-t border-slate-200/50">
@@ -169,7 +270,7 @@ const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
                           <input 
                             type="checkbox"
                             checked={isMerging}
-                            onChange={(e) => setMergeSessions(prev => ({ ...prev, [group.name]: e.target.checked }))}
+                            onChange={(e) => setMergeSessions(prev => ({ ...prev, [group.id]: e.target.checked }))}
                             className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                           />
                           <span className="text-sm text-slate-700 font-medium">Sum sessions from all duplicates?</span>
@@ -187,7 +288,7 @@ const DuplicateResolverModal: React.FC<DuplicateResolverModalProps> = ({
 
                     <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end">
                       <button 
-                        onClick={() => handleResolveGroup(group.name, group.items)}
+                        onClick={() => handleResolveGroup(group.id, group.items)}
                         className="flex items-center space-x-2 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-indigo-600 transition-colors"
                       >
                         <Merge size={16} />
